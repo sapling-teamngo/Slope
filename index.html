@@ -1,0 +1,46 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Earth Smiles Calculator</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>🌍 Earth Smiles Geometry & Distribution Calculator</h1>
+    <div id="language-switch">
+        <button onclick="setLanguage('en')">English</button>
+        <button onclick="setLanguage('fr')">Français</button>
+        <button onclick="setLanguage('ar')">العربية</button>
+    </div>
+    <div id="form">
+        <label id="rainfall-label">Rainfall (mm):</label>
+        <input type="number" id="rainfall" value="1025">
+
+        <label id="slope-label">Slope:</label>
+        <select id="slope">
+            <option value="3">Gentle</option>
+            <option value="6">Moderate</option>
+            <option value="11">Rolling</option>
+        </select>
+
+        <label id="soil-label">Soil Texture:</label>
+        <select id="soil">
+            <option value="1.0">Sandy</option>
+            <option value="1.2">Loamy</option>
+            <option value="1.5">Clay</option>
+        </select>
+
+        <label id="land-label">Land Area (m²):</label>
+        <input type="number" id="land_area" value="1000">
+
+        <button onclick="calculate()">Calculate</button>
+        <button onclick="downloadResults()">Download Results</button>
+    </div>
+
+    <div id="results"></div>
+    <div id="explanation"></div>
+    <script src="script.js"></script>
+</body>
+</html>
