@@ -99,7 +99,7 @@
           <input type="range" id="exaggerationSlider" min="0.1" max="5" step="0.1" value="1.0">
           <div class="small" style="margin-top: 4px;">
             <span style="color: #666;">0.1x (Flat)</span>
-            <span style="float: right; color: #666;">5x (Dramatic)</span>
+            <span style="float: right; color: #666;">50x (extreme)</span>
           </div>
         </div>
         
@@ -233,7 +233,7 @@ class TerrainVisualizer {
     this.threeDContainer = document.getElementById('threeDContainer');
     
     // NEW: Initialize exaggeration
-    this.exaggeration = 1.0;
+    this.exaggeration = 10.0;
     
     this.setCanvasSizes();
     this.setupEventListeners();
@@ -455,7 +455,7 @@ class TerrainVisualizer {
         aspectratio: {
           x: 1, 
           y: 1, 
-          z: exaggeration * (elevRange / Math.max(1, this.calculatePolygonDimensions().width))
+          z: exaggeration 
         },
         camera: {
           eye: {x: 1.5, y: 1.5, z: 1.5}
