@@ -380,21 +380,40 @@ async function analyze(){
   // fetch elevations in batches
   let elevs = await fetchElevations(samples, source);
   
-  // If OpenTopoData fails, try fallback
-  if(!elevs && (source === 'opentopodata' || source === 'opentopodata-aster')) {
-    showStatus('Primary elevation source failed. Trying fallback...', 'error');
-    const fallbackSource = source === 'opentopodata' ? 'opentopodata-aster' : 'opentopodata';
-    elevs = await fetchElevations(samples, fallbackSource);
+  // If primary source fails, try fallbacks
+  if(!elevs) {
+    showStatus('Primary elevation source failed. Trying fallbacks...', 'error');
     
-    if(!elevs) {
-      showStatus('Trying Open-Elevation as final fallback...', 'error');
-      elevs = await fetchElevations(samples, 'open-elevation');
+    if (source === 'opentopodata') {
+      elevs = await fetchElevations(samples, 'opentopodata-aster');
+      if (!elevs) {
+        showStatus('Trying Open-Elevation as final fallback...', 'error');
+        elevs = await fetchElevations(samples, 'open-elevation');
+      }
+    } else if (source === 'opentopodata-aster') {
+      elevs = await fetchElevations(samples, 'opentopodata');
+      if (!elevs) {
+        showStatus('Trying Open-Elevation as final fallback...', 'error');
+        elevs = await fetchElevations(samples, 'open-elevation');
+      }
+    } else if (source === 'open-elevation') {
+      elevs = await fetchElevations(samples, 'opentopodata');
+      if (!elevs) {
+        showStatus('Trying ASTER as final fallback...', 'error');
+        elevs = await fetchElevations(samples, 'opentopodata-aster');
+      }
     }
   }
   
   if(!elevs){ 
     showStatus('All elevation services failed. Please try again later or use different coordinates.', 'error');
     return; 
+  }
+  
+  // Validate elevation data - check if we got constant values (service failure)
+  const uniqueElevations = [...new Set(elevs.map(e => Math.round(e * 100)))];
+  if (uniqueElevations.length <= 1) {
+    showStatus('Warning: Received constant elevation values. Elevation service may be unavailable.', 'error');
   }
   
   showStatus('Elevation data loaded successfully! Calculating slopes...', 'success');
@@ -473,7 +492,7 @@ function resamplePolyline(latlngs, stepM){
   return out;
 }
 
-// elevation fetch: batch for OpenTopoData and Open-Elevation
+// elevation fetch: batch for OpenTopoData and Open-Elevation - FIXED ERROR HANDLING
 async function fetchElevations(samples, source){
   try{
     const results = [];
@@ -509,22 +528,49 @@ async function fetchElevations(samples, source){
           await new Promise(res=>setTimeout(res, 2000)); // Wait 2 seconds
           // Try one more time
           const retryResp = await fetch(url);
-          if(!retryResp.ok) throw new Error(`Rate limit persist: ${retryResp.status}`);
+          if(!retryResp.ok) {
+            throw new Error(`Rate limit persists: ${retryResp.status}`);
+          }
           const retryJs = await retryResp.json();
-          if(!retryJs.results) throw new Error('No results in response');
-          retryJs.results.forEach(r=>results.push(r.elevation));
+          if(!retryJs.results) {
+            throw new Error('No results in response after retry');
+          }
+          retryJs.results.forEach(r=>{
+            if (r.elevation !== null && r.elevation !== undefined) {
+              results.push(r.elevation);
+            } else {
+              results.push(0); // Fallback to 0 if no elevation
+            }
+          });
         } else {
           throw new Error(`${source} error ${resp.status}: ${errorText}`);
         }
       } else {
         const js = await resp.json();
-        if(!js.results) throw new Error(`${source}: no results`);
-        js.results.forEach(r=>results.push(r.elevation));
+        if(!js.results) {
+          throw new Error(`${source}: no results in response`);
+        }
+        
+        // Validate each elevation result
+        js.results.forEach(r=>{
+          if (r.elevation !== null && r.elevation !== undefined) {
+            results.push(r.elevation);
+          } else {
+            console.warn('Missing elevation for point, using 0 as fallback');
+            results.push(0);
+          }
+        });
       }
       
       // Increased delay to reduce rate issues
       await new Promise(res=>setTimeout(res, 1000));
     }
+    
+    // Final validation - check if we got any valid elevations
+    if (results.length !== samples.length) {
+      throw new Error(`Expected ${samples.length} elevations but got ${results.length}`);
+    }
+    
     return results;
   }catch(err){
     console.error('Elevation fetch failed:', err);
@@ -645,4 +691,4 @@ updateCoordsBox();
 
 </script>
 </body>
-</html>
+  </html>
