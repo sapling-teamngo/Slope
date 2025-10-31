@@ -48,6 +48,10 @@
   .legend-color {width:20px; height:20px; border:1px solid #ccc;}
   .viz-info {margin-top:8px; font-size:12px; color:#666;}
   .plotly-plot {width:100% !important; height:100% !important;}
+  .exaggeration-control {margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px;}
+  .exaggeration-control label {font-weight: 600; margin-bottom: 8px; display: block;}
+  .exaggeration-control input[type="range"] {width: 100%; margin: 8px 0;}
+  #exaggerationValue {color: var(--accent); font-weight: bold;}
 </style>
 </head>
 <body>
@@ -89,6 +93,16 @@
       </div>
       
       <div class="viz-content" id="threedViz">
+        <!-- NEW: Exaggeration Control -->
+        <div class="exaggeration-control">
+          <label for="exaggerationSlider">3D Vertical Exaggeration: <span id="exaggerationValue">1.0</span>x</label>
+          <input type="range" id="exaggerationSlider" min="0.1" max="5" step="0.1" value="1.0">
+          <div class="small" style="margin-top: 4px;">
+            <span style="color: #666;">0.1x (Flat)</span>
+            <span style="float: right; color: #666;">5x (Dramatic)</span>
+          </div>
+        </div>
+        
         <div id="threeDContainer"></div>
         <div class="viz-info">Drag to rotate • Scroll to zoom • Right-click to pan</div>
         <div class="viz-controls">
@@ -218,6 +232,9 @@ class TerrainVisualizer {
     this.flowCtx = this.flowCanvas.getContext('2d');
     this.threeDContainer = document.getElementById('threeDContainer');
     
+    // NEW: Initialize exaggeration
+    this.exaggeration = 1.0;
+    
     this.setCanvasSizes();
     this.setupEventListeners();
   }
@@ -231,6 +248,13 @@ class TerrainVisualizer {
   }
 
   setupEventListeners() {
+    // NEW: Exaggeration slider
+    document.getElementById('exaggerationSlider').addEventListener('input', (e) => {
+      document.getElementById('exaggerationValue').textContent = e.target.value;
+      this.exaggeration = parseFloat(e.target.value);
+      this.update3D();
+    });
+    
     // Export buttons
     document.getElementById('btnExportDEM').addEventListener('click', () => this.exportCanvas(this.demCanvas, 'dem'));
     document.getElementById('btnExportFlow').addEventListener('click', () => this.exportCanvas(this.flowCanvas, 'flow'));
@@ -301,22 +325,6 @@ class TerrainVisualizer {
     const area = width * height;
     
     return { width, height, area };
-  }
-
-  calculateAppropriateExaggeration() {
-    const dimensions = this.calculatePolygonDimensions();
-    const area = dimensions.area;
-    
-    // Smart exaggeration based on area size
-    if (area < 10000) { // Small area (less than 1 hectare)
-      return 2.0;
-    } else if (area < 100000) { // Medium area (1-10 hectares)
-      return 1.5;
-    } else if (area < 1000000) { // Large area (10-100 hectares)
-      return 1.2;
-    } else { // Very large area
-      return 1.0; // No exaggeration
-    }
   }
 
   updateDEM() {
@@ -394,8 +402,8 @@ class TerrainVisualizer {
     const maxElev = Math.max(...elevs);
     const elevRange = Math.max(1, maxElev - minElev);
     
-    // Calculate appropriate exaggeration based on polygon size
-    const exaggeration = this.calculateAppropriateExaggeration();
+    // Use the slider value for exaggeration
+    const exaggeration = this.exaggeration;
     
     // Prepare data for Plotly
     const x = this.samplePoints.map(p => p.lng);
@@ -434,7 +442,7 @@ class TerrainVisualizer {
     
     const layout = {
       title: {
-        text: `3D Terrain Model • Exaggeration: ${exaggeration}x`,
+        text: `3D Terrain Model • Vertical Exaggeration: ${exaggeration.toFixed(1)}x`,
         font: { size: 14 }
       },
       scene: {
