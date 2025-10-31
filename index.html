@@ -30,11 +30,566 @@
   #xsChart{width:100%;height:220px}
   footer{text-align:center;padding:10px;color:#333}
   a.link{color:var(--accent);text-decoration:none}
+  .error{color:#d9534f;background:#fdf2f2;padding:8px;border-radius:4px;margin:8px 0}
+  .success{color:#2e7d32;background:#f2fdf2;padding:8px;border-radius:4px;margin:8px 0}
 </style>
 </head>
 <body>
 <header>
   <h1>Slope Analyzer — draw / upload / paste • Cross-section & slopes</h1>
+  <div class="small">Map: OpenStreetMap • Elevation: OpenTopoData (SRTM) or Open-Elevation. Calculations shown with sources.</div>
+</header>
+
+<div class="wrap">
+  <!-- left: map + chart -->
+  <div>
+    <div id="map" class="panel"></div>
+
+    <div class="panel" style="margin-top:12px">
+      <h3>Cross-section</h3>
+      <canvas id="xsChart"></canvas>
+    </div>
+
+    <div class="panel" style="margin-top:12px">
+      <h3>Export</h3>
+      <div class="small">Download a CSV of the computed points/segments</div>
+      <button id="btnExportCSV">Export CSV</button>
+      <div class="small" style="margin-top:8px">Open locally? Use Firefox or run a tiny server:
+        <code>python -m http.server 8000</code>
+      </div>
+    </div>
+  </div>
+
+  <!-- right: controls & results -->
+  <aside>
+    <div class="panel">
+      <h3>Inputs & Controls</h3>
+
+      <label>Mode</label>
+      <select id="mode">
+        <option value="draw">Draw polygon / line (use draw tools)</option>
+        <option value="manual">Manual coordinates (lat,lng per line)</option>
+        <option value="kml">Upload KML (Polygon or LineString)</option>
+      </select>
+
+      <div id="drawBlock" style="margin-top:8px">
+        <div class="small">Use the drawing control on the map to draw polygon or line. Click map to add points when not drawing.</div>
+      </div>
+
+      <div id="manualBlock" style="display:none">
+        <label>Manual coordinates (lat,lng per line)</label>
+        <textarea id="manualCoords" placeholder="31.95,35.91"></textarea>
+        <button id="btnLoadManual">Load Coordinates</button>
+      </div>
+
+      <div id="kmlBlock" style="display:none">
+        <label>Upload KML</label>
+        <input type="file" id="kmlfile" accept=".kml"/>
+      </div>
+
+      <label>Go to coordinates (lat,lng)</label>
+      <div class="row">
+        <input id="goto" placeholder="31.95,35.91"/>
+        <button id="btnGo">Go</button>
+      </div>
+
+      <label>Sampling distance along line (m)</label>
+      <input id="sampleDist" type="number" value="50"/>
+
+      <label>Elevation source (batch)</label>
+      <select id="elevSource">
+        <option value="opentopodata">OpenTopoData (SRTM) — recommended</option>
+        <option value="opentopodata-aster">OpenTopoData (ASTER) — alternative</option>
+        <option value="open-elevation">Open-Elevation (public)</option>
+      </select>
+
+      <div id="statusMessage"></div>
+
+      <div class="row" style="margin-top:8px">
+        <button id="btnClear">Clear</button>
+        <button id="btnAnalyze">Analyze</button>
+      </div>
+
+      <label style="margin-top:10px">Map coordinates / actions</label>
+      <div class="small">Tap the map to add a point (or draw). Click a sample marker to see elev & source.</div>
+      <div class="coords" id="coordsBox">No geometry yet</div>
+    </div>
+
+    <div class="panel" style="margin-top:12px">
+      <h3>Summary Results</h3>
+      <div id="summary">No results yet</div>
+    </div>
+
+    <div class="panel" style="margin-top:12px">
+      <h3>Detailed table</h3>
+      <div id="tableBox">No data</div>
+    </div>
+
+    <div class="panel" style="margin-top:12px">
+      <h4>Sources & credits</h4>
+      <div class="small">
+        Map tiles: OpenStreetMap contributors. Elevation: chosen source (OpenTopoData or Open-Elevation). Calculations performed client-side (haversine distances, shoelace area).<br/>
+        Made by <a class="link" href="https://www.linkedin.com/in/omaryaseen" target="_blank">Omar Yaseen</a>.
+      </div>
+    </div>
+  </aside>
+</div>
+
+<footer>
+  <div class="small">Tip: If opening from a local file causes issues on Android, open in Firefox or serve via a tiny web server.</div>
+</footer>
+
+<!-- libs -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/togeojson@0.16.0/dist/togeojson.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+// ---------- Utilities ----------
+function toFixedSafe(v, n=4){ return (typeof v === 'number')? v.toFixed(n): v; }
+function haversineMeters(lat1,lon1,lat2,lon2){
+  const R=6371000, to=r=>r*Math.PI/180;
+  const dlat=to(lat2-lat1), dlon=to(lon2-lon1);
+  const a=Math.sin(dlat/2)**2 + Math.cos(to(lat1))*Math.cos(to(lat2))*Math.sin(dlon/2)**2;
+  const c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  return R*c;
+}
+function polygonAreaMeters(coords){
+  // coords: [ [lat,lng], ... ] (closed or not)
+  // convert to projected XY approx via simple equirectangular projection (accurate enough for moderate extents)
+  if(coords.length<3) return 0;
+  const R=6371000, to=r=>r*Math.PI/180;
+  const lat0 = coords[0][0]*Math.PI/180;
+  let area=0;
+  for(let i=0;i<coords.length;i++){
+    const j=(i+1)%coords.length;
+    const x1 = R * coords[i][1]*Math.PI/180 * Math.cos(lat0);
+    const y1 = R * coords[i][0]*Math.PI/180;
+    const x2 = R * coords[j][1]*Math.PI/180 * Math.cos(lat0);
+    const y2 = R * coords[j][0]*Math.PI/180;
+    area += (x1*y2 - x2*y1);
+  }
+  return Math.abs(area/2);
+}
+
+// ---------- Status Messages ----------
+function showStatus(message, type = 'info') {
+  const statusEl = document.getElementById('statusMessage');
+  statusEl.innerHTML = `<div class="${type === 'error' ? 'error' : type === 'success' ? 'success' : 'small'}">${message}</div>`;
+  if (type !== 'error' && type !== 'success') {
+    setTimeout(() => { statusEl.innerHTML = ''; }, 3000);
+  }
+}
+
+// ---------- Map ----------
+const map = L.map('map').setView([31.95,35.91], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors' }).addTo(map);
+
+// drawing
+const drawnItems = new L.FeatureGroup().addTo(map);
+const drawControl = new L.Control.Draw({ edit: { featureGroup: drawnItems } });
+map.addControl(drawControl);
+
+// geometry state
+let currentGeometry = null; // {type:'line'|'polygon', coords:[[lat,lng],...]}
+let samplePoints = []; // {lat,lng,elev,source}
+
+// show mouse coords
+map.on('mousemove', e => {
+  // no action needed — coords shown in coordsBox only
+});
+
+// add point on map click when not drawing
+map.on('click', e => {
+  if(!drawnItems.getLayers().length){
+    // allow user to add standalone points
+    addPoint([e.latlng.lat, e.latlng.lng]);
+  }
+});
+
+map.on(L.Draw.Event.CREATED, function (event) {
+  drawnItems.clearLayers();
+  drawnItems.addLayer(event.layer);
+  extractGeometryFromLayer(event.layer);
+});
+
+// helpers to extract geometry
+function extractGeometryFromLayer(layer){
+  let latlngs = layer.getLatLngs();
+  if(Array.isArray(latlngs[0])) latlngs = latlngs[0]; // polygon returns nested
+  const coords = latlngs.map(p=>[p.lat,p.lng]);
+  const type = layer instanceof L.Polygon ? 'polygon' : 'line';
+  currentGeometry = {type, coords};
+  updateCoordsBox();
+}
+
+// manual load
+document.getElementById('mode').addEventListener('change', e=>{
+  const m=e.target.value;
+  document.getElementById('manualBlock').style.display = m==='manual' ? 'block' : 'none';
+  document.getElementById('kmlBlock').style.display = m==='kml' ? 'block' : 'none';
+});
+
+// load manual
+document.getElementById('btnLoadManual').addEventListener('click', ()=>{
+  const text = document.getElementById('manualCoords').value.trim();
+  if(!text) return alert('Paste coordinates as lat,lng per line');
+  const pts = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{
+    const parts = l.split(',').map(x=>parseFloat(x.trim())); return [parts[0],parts[1]];
+  });
+  if(pts.length<2) return alert('Need at least 2 points');
+  drawnItems.clearLayers();
+  L.polyline(pts).addTo(drawnItems);
+  map.fitBounds(pts.map(p=>[p[0],p[1]]));
+  currentGeometry = {type:'line', coords: pts};
+  updateCoordsBox();
+});
+
+// KML upload
+document.getElementById('kmlfile').addEventListener('change', e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const reader=new FileReader();
+  reader.onload = () => {
+    try{
+      const kml = new DOMParser().parseFromString(reader.result, 'text/xml');
+      const gj = toGeoJSON.kml(kml);
+      if(!gj.features.length) return alert('No features in KML');
+      // pick first LineString or Polygon
+      const feat = gj.features.find(f=>f.geometry.type==='LineString' || f.geometry.type==='Polygon') || gj.features[0];
+      let coords = feat.geometry.coordinates;
+      if(feat.geometry.type==='Polygon') coords = coords[0];
+      // convert [lng,lat] -> [lat,lng]
+      coords = coords.map(c=>[c[1],c[0]]);
+      drawnItems.clearLayers();
+      if(feat.geometry.type==='Polygon') L.polygon(coords).addTo(drawnItems); else L.polyline(coords).addTo(drawnItems);
+      map.fitBounds(coords.map(c=>[c[0],c[1]]));
+      currentGeometry = { type: feat.geometry.type==='Polygon' ? 'polygon' : 'line', coords };
+      updateCoordsBox();
+    }catch(err){ alert('Failed to parse KML: '+err); }
+  };
+  reader.readAsText(f);
+});
+
+// Go to coord
+document.getElementById('btnGo').addEventListener('click', ()=>{
+  const v=document.getElementById('goto').value.trim(); if(!v) return;
+  const p=v.split(',').map(x=>parseFloat(x.trim()));
+  if(isNaN(p[0])||isNaN(p[1])) return alert('Bad coordinates');
+  map.setView([p[0],p[1]], 15);
+});
+
+// clear
+document.getElementById('btnClear').addEventListener('click', ()=>{
+  drawnItems.clearLayers(); currentGeometry = null; samplePoints=[]; document.getElementById('coordsBox').textContent='No geometry yet'; document.getElementById('summary').innerHTML='No results yet'; document.getElementById('tableBox').innerHTML='No data'; if(window.xsChart) window.xsChart.destroy(); showStatus('', 'info');
+});
+
+// add point function (user click)
+function addPoint(latlng){
+  const marker = L.circleMarker(latlng, {radius:5, color:'#0b7285'}).addTo(drawnItems);
+  marker.bindPopup('Manual point<br/>' + latlng[0].toFixed(6)+','+latlng[1].toFixed(6)).openPopup();
+  // append to geometry if none exists, or add as standalone polyline
+  if(!currentGeometry){
+    currentGeometry={type:'line', coords:[latlng]};
+  } else {
+    currentGeometry.coords.push(latlng);
+  }
+  updateCoordsBox();
+}
+
+// update coords display
+function updateCoordsBox(){
+  if(!currentGeometry){ document.getElementById('coordsBox').textContent='No geometry yet'; return; }
+  const lines = currentGeometry.coords.map(c=>`${c[0].toFixed(6)}, ${c[1].toFixed(6)}`);
+  document.getElementById('coordsBox').textContent = `${currentGeometry.type.toUpperCase()} • ${currentGeometry.coords.length} pts\n` + lines.join('\n');
+}
+
+// ---------- Sampling & Elevation ----------
+async function analyze(){
+  if(!currentGeometry || currentGeometry.coords.length<2) return alert('Draw or load coordinates first');
+  
+  const step = Math.max(1, parseFloat(document.getElementById('sampleDist').value) || 50);
+  const source = document.getElementById('elevSource').value;
+  
+  showStatus(`Starting analysis with ${source}...`, 'info');
+  
+  // sample along polyline (for polygon use its exterior perimeter as polyline)
+  let poly = currentGeometry.coords.slice();
+  if(currentGeometry.type === 'polygon'){
+    // ensure closed
+    if(poly[0][0] !== poly[poly.length-1][0] || poly[0][1] !== poly[poly.length-1][1]) poly.push(poly[0]);
+  }
+  
+  const samples = resamplePolyline(poly, step); // [{lat,lng}]
+  showStatus(`Sampled ${samples.length} points. Fetching elevations...`, 'info');
+  
+  // fetch elevations in batches
+  let elevs = await fetchElevations(samples, source);
+  
+  // If OpenTopoData fails, try fallback
+  if(!elevs && (source === 'opentopodata' || source === 'opentopodata-aster')) {
+    showStatus('Primary elevation source failed. Trying fallback...', 'error');
+    const fallbackSource = source === 'opentopodata' ? 'opentopodata-aster' : 'opentopodata';
+    elevs = await fetchElevations(samples, fallbackSource);
+    
+    if(!elevs) {
+      showStatus('Trying Open-Elevation as final fallback...', 'error');
+      elevs = await fetchElevations(samples, 'open-elevation');
+    }
+  }
+  
+  if(!elevs){ 
+    showStatus('All elevation services failed. Please try again later or use different coordinates.', 'error');
+    return; 
+  }
+  
+  showStatus('Elevation data loaded successfully! Calculating slopes...', 'success');
+  
+  // merge
+  samplePoints = samples.map((s,i)=>({lat:s[0], lng:s[1], elev: elevs[i], source}));
+  
+  // compute slopes & distances
+  const pairs = [];
+  for(let i=0;i<samplePoints.length-1;i++){
+    const a=samplePoints[i], b=samplePoints[i+1];
+    const d = haversineMeters(a.lat,a.lng,b.lat,b.lng);
+    const dz = b.elev - a.elev;
+    const slope = d>0 ? Math.abs(dz)/d : 0; // absolute (no minuses)
+    pairs.push({i, i1:i+1, dist:d, dz:dz, slope: slope, from:[a.lat,a.lng], to:[b.lat,b.lng]});
+  }
+  
+  // compute pairwise slopes (all possible pairs)
+  const pairwise = [];
+  for(let i=0;i<samplePoints.length;i++){
+    for(let j=i+1;j<samplePoints.length;j++){
+      const a=samplePoints[i], b=samplePoints[j];
+      const d = haversineMeters(a.lat,a.lng,b.lat,b.lng);
+      const dz = b.elev - a.elev;
+      const slope = d>0 ? Math.abs(dz)/d : 0;
+      pairwise.push({i,j,dist:d,dz, slope});
+    }
+  }
+  
+  // general slope of area: (max elev - min elev) / max horizontal distance among samples
+  const elevsOnly = samplePoints.map(p=>p.elev);
+  const maxElev = Math.max(...elevsOnly);
+  const minElev = Math.min(...elevsOnly);
+  let maxDist = 0;
+  for(let i=0;i<samplePoints.length;i++){
+    for(let j=i+1;j<samplePoints.length;j++){
+      const d = haversineMeters(samplePoints[i].lat,samplePoints[i].lng, samplePoints[j].lat,samplePoints[j].lng);
+      if(d>maxDist) maxDist = d;
+    }
+  }
+  const generalSlope = maxDist>0 ? Math.abs(maxElev-minElev)/maxDist : 0;
+  
+  // area (if polygon)
+  let area = 0;
+  if(currentGeometry.type==='polygon'){
+    // use vertices without the closing repeated point
+    let polyCoords = currentGeometry.coords.slice();
+    if(polyCoords[0][0] === polyCoords[polyCoords.length-1][0] && polyCoords[0][1] === polyCoords[polyCoords.length-1][1]) polyCoords = polyCoords.slice(0,-1);
+    area = polygonAreaMeters(polyCoords);
+  }
+
+  // render results
+  renderResults({pairs, pairwise, generalSlope, maxElev, minElev, maxDist, area});
+  renderChart(samplePoints);
+  renderMapSamples();
+  
+  showStatus('Analysis complete!', 'success');
+  setTimeout(() => showStatus('', 'info'), 3000);
+}
+
+// resample polyline with approx spacing (meters)
+function resamplePolyline(latlngs, stepM){
+  const out = [];
+  for(let i=0;i<latlngs.length-1;i++){
+    const a = latlngs[i], b = latlngs[i+1];
+    const seg = haversineMeters(a[0],a[1],b[0],b[1]);
+    const n = Math.max(1, Math.ceil(seg/stepM));
+    for(let j=0;j<n;j++){
+      const t = j/n;
+      const lat = a[0] + (b[0]-a[0])*t;
+      const lng = a[1] + (b[1]-a[1])*t;
+      out.push([lat,lng]);
+    }
+  }
+  out.push(latlngs[latlngs.length-1]); // last
+  return out;
+}
+
+// elevation fetch: batch for OpenTopoData and Open-Elevation
+async function fetchElevations(samples, source){
+  try{
+    const results = [];
+    const batchSize = 50; // Reduced for better rate limiting
+    let dataset = 'srtm90m';
+    
+    if(source === 'opentopodata-aster') {
+      dataset = 'aster30m';
+    }
+    
+    for(let i=0;i<samples.length;i+=batchSize){
+      const chunk = samples.slice(i,i+batchSize);
+      const locations = chunk.map(p=>`${p[0]},${p[1]}`).join('|');
+      
+      let url;
+      if(source.startsWith('opentopodata')){
+        url = `https://api.opentopodata.org/v1/${dataset}?locations=${encodeURIComponent(locations)}`;
+      } else {
+        // Open-Elevation supports locations=lat,lng|lat,lng
+        url = `https://api.open-elevation.com/api/v1/lookup?locations=${encodeURIComponent(locations)}`;
+      }
+      
+      showStatus(`Fetching elevations ${i+1}-${Math.min(i+batchSize, samples.length)}/${samples.length}...`, 'info');
+      
+      const resp = await fetch(url);
+      if(!resp.ok) {
+        const errorText = await resp.text();
+        console.error(`${source} error:`, resp.status, errorText);
+        
+        // Check for rate limiting
+        if(resp.status === 429) {
+          showStatus('Rate limit exceeded. Waiting before retry...', 'error');
+          await new Promise(res=>setTimeout(res, 2000)); // Wait 2 seconds
+          // Try one more time
+          const retryResp = await fetch(url);
+          if(!retryResp.ok) throw new Error(`Rate limit persist: ${retryResp.status}`);
+          const retryJs = await retryResp.json();
+          if(!retryJs.results) throw new Error('No results in response');
+          retryJs.results.forEach(r=>results.push(r.elevation));
+        } else {
+          throw new Error(`${source} error ${resp.status}: ${errorText}`);
+        }
+      } else {
+        const js = await resp.json();
+        if(!js.results) throw new Error(`${source}: no results`);
+        js.results.forEach(r=>results.push(r.elevation));
+      }
+      
+      // Increased delay to reduce rate issues
+      await new Promise(res=>setTimeout(res, 1000));
+    }
+    return results;
+  }catch(err){
+    console.error('Elevation fetch failed:', err);
+    showStatus(`Elevation fetch failed: ${err.message}`, 'error');
+    return null;
+  }
+}
+
+// render map sample markers and line
+let sampleLayer = L.layerGroup().addTo(map);
+function renderMapSamples(){
+  sampleLayer.clearLayers();
+  if(samplePoints.length===0) return;
+  const latlngs = samplePoints.map(p=>[p.lat,p.lng]);
+  L.polyline(latlngs, {color:'#d9534f', weight:3}).addTo(sampleLayer);
+  samplePoints.forEach((p,i)=>{
+    const m = L.circleMarker([p.lat,p.lng], {radius:4, color:'#0b7285'}).addTo(sampleLayer);
+    m.bindPopup(`pt ${i+1}<br/>elev: ${p.elev} m<br/>source: ${p.source}`);
+  });
+  map.fitBounds(latlngs);
+}
+
+// render chart
+let xsChart = null;
+function renderChart(points){
+  const dists = [0];
+  for(let i=1;i<points.length;i++){
+    const d = haversineMeters(points[i-1].lat,points[i-1].lng,points[i].lat,points[i].lng);
+    dists.push(dists[i-1] + d);
+  }
+  const labels = dists.map(d=>d.toFixed(1));
+  const elevs = points.map(p=>p.elev);
+  const ctx = document.getElementById('xsChart').getContext('2d');
+  if(xsChart) xsChart.destroy();
+  xsChart = new Chart(ctx, {
+    type:'line',
+    data:{
+      labels: labels,
+      datasets:[{label:'Elevation (m)', data:elevs, fill:true, tension:0.2}]
+    },
+    options:{
+      plugins:{legend:{display:false}},
+      scales:{ x: { title:{display:true,text:'Distance (m)'} }, y: { title:{display:true,text:'Elevation (m)'} } }
+    }
+  });
+  window.xsChart = xsChart;
+}
+
+// render results table/summary
+function renderResults(obj){
+  const {pairs, pairwise, generalSlope, maxElev, minElev, maxDist, area} = obj;
+  const avgAdjacentSlope = pairs.length ? (pairs.reduce((a,b)=>a + Math.abs(b.slope),0)/pairs.length) : 0;
+  const maxPairwise = pairwise.length ? pairwise.reduce((a,b)=> b.slope>a.slope?b:a ) : null;
+  const summaryEl = document.getElementById('summary');
+  summaryEl.innerHTML = `
+    <div><b>Sample points:</b> ${samplePoints.length}</div>
+    <div><b>Area:</b> ${area? (area.toFixed(1)+' m² ('+(area/10000).toFixed(3)+' ha)') : 'N/A (not polygon)'}</div>
+    <div><b>Elevation range:</b> ${minElev} m — ${maxElev} m (Δ ${ (maxElev-minElev).toFixed(2)} m)</div>
+    <div><b>General slope (max Δe / max horizontal distance):</b> ${generalSlope.toFixed(5)} m/m (${(generalSlope*100).toFixed(2)} %)</div>
+    <div><b>Average adjacent slope:</b> ${avgAdjacentSlope.toFixed(5)} m/m (${(avgAdjacentSlope*100).toFixed(2)} %)</div>
+    <div><b>Max pairwise slope:</b> ${maxPairwise ? maxPairwise.slope.toFixed(5)+' m/m ('+(maxPairwise.slope*100).toFixed(2)+' %) between pts '+maxPairwise.i+' & '+maxPairwise.j : 'N/A'}</div>
+    <div class="small" style="margin-top:6px">All slope values are <b>absolute</b> (no negative values). Distances use haversine (approx.). Elevation source shown per point.</div>
+  `;
+
+  // table of adjacent segments
+  const tbl = document.createElement('table');
+  tbl.innerHTML = `<thead><tr><th>#</th><th>From (lat,lng)</th><th>To (lat,lng)</th><th>Dist (m)</th><th>Δz (m)</th><th>Slope (m/m)</th></tr></thead>`;
+  const tbody = document.createElement('tbody');
+  pairs.forEach((p,idx)=>{
+    const r = document.createElement('tr');
+    r.innerHTML = `<td>${idx+1}</td>
+      <td>${p.from[0].toFixed(6)}, ${p.from[1].toFixed(6)}</td>
+      <td>${p.to[0].toFixed(6)}, ${p.to[1].toFixed(6)}</td>
+      <td>${p.dist.toFixed(1)}</td>
+      <td>${p.dz.toFixed(2)}</td>
+      <td>${p.slope.toFixed(5)}</td>`;
+    tbody.appendChild(r);
+  });
+  tbl.appendChild(tbody);
+  const box = document.getElementById('tableBox');
+  box.innerHTML = '';
+  box.appendChild(tbl);
+}
+
+// export CSV
+document.getElementById('btnExportCSV').addEventListener('click', ()=>{
+  if(!samplePoints.length) return alert('No samples to export');
+  let csv = 'index,lat,lng,elevation_m,source\n';
+  samplePoints.forEach((p,i)=> csv += `${i+1},${p.lat},${p.lng},${p.elev},${p.source}\n`);
+  // also append adjacent pairs
+  csv += '\nseg_index,from_idx,to_idx,dist_m,dz_m,slope_m_per_m\n';
+  const pairs = [];
+  for(let i=0;i<samplePoints.length-1;i++){
+    const a=samplePoints[i], b=samplePoints[i+1];
+    const d = haversineMeters(a.lat,a.lng,b.lat,b.lng);
+    const dz = b.elev - a.elev;
+    const slope = d>0? Math.abs(dz)/d : 0;
+    csv += `${i+1},${i+1},${i+2},${d.toFixed(2)},${dz.toFixed(3)},${slope.toFixed(6)}\n`;
+  }
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='slope_results.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+});
+
+// ---------- UI wiring ----------
+document.getElementById('btnAnalyze').addEventListener('click', analyze);
+
+// For convenience: double click map to add point and update geometry
+map.on('dblclick', e=>{
+  addPoint([e.latlng.lat, e.latlng.lng]);
+});
+
+// show click on sample to view more -> handled by popups when rendering
+// initial message
+updateCoordsBox();
+
+</script>
+</body>
+</html>  <h1>Slope Analyzer — draw / upload / paste • Cross-section & slopes</h1>
   <div class="small">Map: OpenStreetMap • Elevation: OpenTopoData (SRTM) or Open-Elevation. Calculations shown with sources.</div>
 </header>
 
