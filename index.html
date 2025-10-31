@@ -233,7 +233,7 @@ class TerrainVisualizer {
     this.threeDContainer = document.getElementById('threeDContainer');
     
     // NEW: Initialize exaggeration
-    this.exaggeration = 10.0;
+    this.exaggeration = 1.0;
     
     this.setCanvasSizes();
     this.setupEventListeners();
@@ -303,28 +303,16 @@ class TerrainVisualizer {
     this.updateFlow();
   }
 
-  calculatePolygonDimensions() {
-    if (!this.geometry || this.geometry.type !== 'polygon') {
-      return { width: 1000, height: 1000, area: 1000000 }; // Default for lines
+  calculateTotalDistance() {
+    if (!this.samplePoints || this.samplePoints.length < 2) return 0;
+    
+    let total = 0;
+    for (let i = 0; i < this.samplePoints.length - 1; i++) {
+      const a = this.samplePoints[i];
+      const b = this.samplePoints[i + 1];
+      total += haversineMeters(a.lat, a.lng, b.lat, b.lng);
     }
-    
-    const coords = this.geometry.coords;
-    let minLat = Infinity, maxLat = -Infinity;
-    let minLng = Infinity, maxLng = -Infinity;
-    
-    coords.forEach(coord => {
-      minLat = Math.min(minLat, coord[0]);
-      maxLat = Math.max(maxLat, coord[0]);
-      minLng = Math.min(minLng, coord[1]);
-      maxLng = Math.max(maxLng, coord[1]);
-    });
-    
-    // Calculate approximate dimensions in meters
-    const width = haversineMeters(minLat, minLng, minLat, maxLng);
-    const height = haversineMeters(minLat, minLng, maxLat, minLng);
-    const area = width * height;
-    
-    return { width, height, area };
+    return total;
   }
 
   updateDEM() {
@@ -335,63 +323,88 @@ class TerrainVisualizer {
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, width, height);
     
-    if (!this.samplePoints) return;
+    if (!this.samplePoints || this.samplePoints.length === 0) return;
     
     const elevs = this.samplePoints.map(p => p.elev);
     const minElev = Math.min(...elevs);
     const maxElev = Math.max(...elevs);
     const elevRange = Math.max(1, maxElev - minElev);
     
-    // Create proper DEM grid
-    const gridSize = Math.max(5, Math.min(20, width / this.samplePoints.length));
-    const cols = Math.floor(width / gridSize);
-    const rows = Math.floor(height / gridSize);
+    // Create real DEM based on actual sample points
+    const points = this.samplePoints;
     
-    // Draw elevation grid
-    for (let x = 0; x < cols; x++) {
-      for (let y = 0; y < rows; y++) {
-        const sampleIndex = Math.floor((x / cols) * this.samplePoints.length);
-        const elev = this.samplePoints[sampleIndex].elev;
-        const normalized = (elev - minElev) / elevRange;
-        
-        // Color based on elevation
-        let color;
-        if (normalized < 0.25) {
-          color = this.interpolateColor([0, 0, 128], [0, 128, 0], normalized / 0.25);
-        } else if (normalized < 0.5) {
-          color = this.interpolateColor([0, 128, 0], [255, 255, 0], (normalized - 0.25) / 0.25);
-        } else if (normalized < 0.75) {
-          color = this.interpolateColor([255, 255, 0], [255, 165, 0], (normalized - 0.5) / 0.25);
-        } else {
-          color = this.interpolateColor([255, 165, 0], [255, 0, 0], (normalized - 0.75) / 0.25);
-        }
-        
-        ctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
-        ctx.fillRect(x * gridSize, y * gridSize, gridSize, gridSize);
+    // Draw elevation profile with proper scaling
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    
+    points.forEach((point, i) => {
+      const x = (i / (points.length - 1)) * width;
+      const y = height - ((point.elev - minElev) / elevRange) * height * 0.8 - 20;
+      
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
       }
-    }
+    });
+    ctx.stroke();
     
-    // Add contour lines
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+    // Fill under the elevation line
+    ctx.fillStyle = 'rgba(0, 100, 200, 0.3)';
+    ctx.beginPath();
+    ctx.moveTo(0, height);
+    points.forEach((point, i) => {
+      const x = (i / (points.length - 1)) * width;
+      const y = height - ((point.elev - minElev) / elevRange) * height * 0.8 - 20;
+      ctx.lineTo(x, y);
+    });
+    ctx.lineTo(width, height);
+    ctx.closePath();
+    ctx.fill();
+    
+    // Add elevation markers and labels
+    points.forEach((point, i) => {
+      if (i % Math.max(1, Math.floor(points.length / 8)) === 0) {
+        const x = (i / (points.length - 1)) * width;
+        const y = height - ((point.elev - minElev) / elevRange) * height * 0.8 - 20;
+        
+        // Marker
+        ctx.fillStyle = '#ff4444';
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // Elevation label
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '10px Arial';
+        ctx.fillText(`${point.elev.toFixed(0)}m`, x + 6, y - 6);
+      }
+    });
+    
+    // Add horizontal reference lines
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
     ctx.lineWidth = 1;
     for (let i = 1; i <= 4; i++) {
-      const contourY = (i / 5) * height;
+      const y = height - (i / 5) * height * 0.8 - 20;
       ctx.beginPath();
-      ctx.moveTo(0, contourY);
-      ctx.lineTo(width, contourY);
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
       ctx.stroke();
       
-      // Label
-      ctx.fillStyle = 'white';
-      ctx.font = '10px Arial';
+      // Elevation value for reference line
       const elevValue = minElev + (i / 5) * elevRange;
-      ctx.fillText(`${elevValue.toFixed(0)}m`, 5, contourY - 5);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+      ctx.font = '10px Arial';
+      ctx.fillText(`${elevValue.toFixed(0)}m`, 5, y - 5);
     }
     
     // Title
     ctx.fillStyle = 'white';
     ctx.font = '14px Arial';
-    ctx.fillText(`Digital Elevation Model - Range: ${minElev.toFixed(0)}m to ${maxElev.toFixed(0)}m`, 10, 20);
+    ctx.fillText(`Elevation Profile - Range: ${minElev.toFixed(0)}m to ${maxElev.toFixed(0)}m`, 10, 20);
+    ctx.font = '12px Arial';
+    ctx.fillText(`Distance: ${this.calculateTotalDistance().toFixed(0)}m | Points: ${points.length}`, 10, 40);
   }
 
   update3D() {
@@ -495,43 +508,57 @@ class TerrainVisualizer {
     const maxElev = Math.max(...elevs);
     const elevRange = Math.max(1, maxElev - minElev);
     
-    // Draw elevation background
-    const segmentWidth = width / (this.samplePoints.length - 1);
+    // Calculate real slopes between points
+    const slopes = [];
+    const distances = [];
+    let totalDistance = 0;
     
     for (let i = 0; i < this.samplePoints.length - 1; i++) {
-      const x = i * segmentWidth;
-      const elev1 = this.samplePoints[i].elev;
-      const elev2 = this.samplePoints[i + 1].elev;
+      const a = this.samplePoints[i];
+      const b = this.samplePoints[i + 1];
+      const dist = haversineMeters(a.lat, a.lng, b.lat, b.lng);
+      const slope = ((b.elev - a.elev) / dist) * 100; // Convert to percentage
       
-      const intensity1 = (elev1 - minElev) / elevRange;
-      const intensity2 = (elev2 - minElev) / elevRange;
-      
-      // Elevation-based color
-      const color1 = this.getElevationColor(intensity1);
-      const color2 = this.getElevationColor(intensity2);
-      
-      const gradient = ctx.createLinearGradient(x, 0, x + segmentWidth, 0);
-      gradient.addColorStop(0, color1);
-      gradient.addColorStop(1, color2);
-      
-      ctx.fillStyle = gradient;
-      ctx.fillRect(x, 0, segmentWidth, height);
+      slopes.push(slope);
+      distances.push(dist);
+      totalDistance += dist;
     }
     
-    // Draw downhill arrows
-    const arrowSpacing = Math.max(1, Math.floor(this.samplePoints.length / 10));
+    // Draw the elevation profile background
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
     
-    for (let i = 0; i < this.samplePoints.length - 1; i += arrowSpacing) {
-      const x = (i + 0.5) * segmentWidth;
+    let currentX = 0;
+    this.samplePoints.forEach((point, i) => {
+      const x = (currentX / totalDistance) * width;
+      const y = height - ((point.elev - minElev) / elevRange) * height * 0.6 - 30;
+      
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+      
+      // Update currentX for next point (proportional to actual distance)
+      if (i < distances.length) {
+        currentX += distances[i];
+      }
+    });
+    ctx.stroke();
+    
+    // Draw downhill/uphill arrows based on real slopes
+    currentX = 0;
+    for (let i = 0; i < slopes.length; i++) {
+      const slope = slopes[i];
+      const distance = distances[i];
+      const segmentWidth = (distance / totalDistance) * width;
+      const x = currentX + segmentWidth / 2;
       const y = height / 2;
       
-      const elev1 = this.samplePoints[i].elev;
-      const elev2 = this.samplePoints[i + 1].elev;
-      const slope = Math.abs(elev2 - elev1);
-      
-      // Determine direction and color
-      const isDownhill = elev2 < elev1;
-      const arrowSize = 8 + (slope / elevRange) * 15;
+      const isDownhill = slope < 0;
+      const slopeIntensity = Math.min(1, Math.abs(slope) / 50); // Adjusted for percentage scale
+      const arrowSize = 8 + slopeIntensity * 12;
       const color = isDownhill ? '#d9534f' : '#5bc0de';
       
       ctx.save();
@@ -554,22 +581,48 @@ class TerrainVisualizer {
       ctx.closePath();
       ctx.fill();
       
-      // Slope indicator dot
-      const dotSize = 3 + (slope / elevRange) * 6;
-      ctx.fillStyle = slope > elevRange * 0.1 ? '#0066cc' : '#66cc66';
+      // Slope intensity indicator
+      const dotSize = 3 + slopeIntensity * 8;
+      ctx.fillStyle = slopeIntensity > 0.5 ? '#0066cc' : '#66cc66';
       ctx.beginPath();
-      ctx.arc(0, arrowSize, dotSize, 0, Math.PI * 2);
+      ctx.arc(0, arrowSize * 1.5, dotSize, 0, Math.PI * 2);
       ctx.fill();
       
+      // Slope percentage label
+      ctx.fillStyle = 'white';
+      ctx.font = '9px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${slope.toFixed(1)}%`, 0, arrowSize * 2.2);
+      
       ctx.restore();
+      
+      currentX += segmentWidth;
     }
+    
+    // Add elevation points
+    currentX = 0;
+    this.samplePoints.forEach((point, i) => {
+      if (i % Math.max(1, Math.floor(this.samplePoints.length / 6)) === 0) {
+        const x = (currentX / totalDistance) * width;
+        const y = height - ((point.elev - minElev) / elevRange) * height * 0.6 - 30;
+        
+        ctx.fillStyle = '#ffff00';
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      
+      if (i < distances.length) {
+        currentX += distances[i];
+      }
+    });
     
     // Title and info
     ctx.fillStyle = 'white';
     ctx.font = '14px Arial';
-    ctx.fillText('Flow Direction Analysis', 10, 20);
+    ctx.fillText('Slope Analysis & Flow Direction', 10, 20);
     ctx.font = '11px Arial';
-    ctx.fillText('Red = Downhill • Blue = Uphill • Dots show slope steepness', 10, 40);
+    ctx.fillText(`Red = Downhill • Blue = Uphill • Total distance: ${totalDistance.toFixed(0)}m`, 10, 40);
   }
 
   interpolateColor(color1, color2, factor) {
@@ -849,7 +902,7 @@ async function analyze(){
     const a=samplePoints[i], b=samplePoints[i+1];
     const d = haversineMeters(a.lat,a.lng,b.lat,b.lng);
     const dz = b.elev - a.elev;
-    const slope = d>0 ? Math.abs(dz)/d : 0;
+    const slope = d>0 ? Math.abs(dz)/d * 100 : 0; // Convert to percentage
     pairs.push({i, i1:i+1, dist:d, dz:dz, slope: slope, from:[a.lat,a.lng], to:[b.lat,b.lng]});
   }
   
@@ -859,7 +912,7 @@ async function analyze(){
       const a=samplePoints[i], b=samplePoints[j];
       const d = haversineMeters(a.lat,a.lng,b.lat,b.lng);
       const dz = b.elev - a.elev;
-      const slope = d>0 ? Math.abs(dz)/d : 0;
+      const slope = d>0 ? Math.abs(dz)/d * 100 : 0; // Convert to percentage
       pairwise.push({i,j,dist:d,dz, slope});
     }
   }
@@ -874,7 +927,7 @@ async function analyze(){
       if(d>maxDist) maxDist = d;
     }
   }
-  const generalSlope = maxDist>0 ? Math.abs(maxElev-minElev)/maxDist : 0;
+  const generalSlope = maxDist>0 ? Math.abs(maxElev-minElev)/maxDist * 100 : 0; // Convert to percentage
   
   let area = 0;
   if(currentGeometry.type==='polygon'){
@@ -1121,14 +1174,14 @@ function renderResults(obj){
     <div><b>Sample points:</b> ${samplePoints.length}</div>
     <div><b>Area:</b> ${area? (area.toFixed(1)+' m² ('+(area/10000).toFixed(3)+' ha)') : 'N/A (not polygon)'}</div>
     <div><b>Elevation range:</b> ${minElev} m — ${maxElev} m (Δ ${ (maxElev-minElev).toFixed(2)} m)</div>
-    <div><b>General slope (max Δe / max horizontal distance):</b> ${generalSlope.toFixed(5)} m/m (${(generalSlope*100).toFixed(2)} %)</div>
-    <div><b>Average adjacent slope:</b> ${avgAdjacentSlope.toFixed(5)} m/m (${(avgAdjacentSlope*100).toFixed(2)} %)</div>
-    <div><b>Max pairwise slope:</b> ${maxPairwise ? maxPairwise.slope.toFixed(5)+' m/m ('+(maxPairwise.slope*100).toFixed(2)+' %) between pts '+maxPairwise.i+' & '+maxPairwise.j : 'N/A'}</div>
+    <div><b>General slope (max Δe / max horizontal distance):</b> ${generalSlope.toFixed(2)} %</div>
+    <div><b>Average adjacent slope:</b> ${avgAdjacentSlope.toFixed(2)} %</div>
+    <div><b>Max pairwise slope:</b> ${maxPairwise ? maxPairwise.slope.toFixed(2)+' % between pts '+maxPairwise.i+' & '+maxPairwise.j : 'N/A'}</div>
     <div class="small" style="margin-top:6px">All slope values are <b>absolute</b> (no negative values). Distances use haversine (approx.). Elevation source shown per point.</div>
   `;
 
   const tbl = document.createElement('table');
-  tbl.innerHTML = `<thead><tr><th>#</th><th>From (lat,lng)</th><th>To (lat,lng)</th><th>Dist (m)</th><th>Δz (m)</th><th>Slope (m/m)</th></tr></thead>`;
+  tbl.innerHTML = `<thead><tr><th>#</th><th>From (lat,lng)</th><th>To (lat,lng)</th><th>Dist (m)</th><th>Δz (m)</th><th>Slope (%)</th></tr></thead>`;
   const tbody = document.createElement('tbody');
   pairs.forEach((p,idx)=>{
     const r = document.createElement('tr');
@@ -1137,7 +1190,7 @@ function renderResults(obj){
       <td>${p.to[0].toFixed(6)}, ${p.to[1].toFixed(6)}</td>
       <td>${p.dist.toFixed(1)}</td>
       <td>${p.dz.toFixed(2)}</td>
-      <td>${p.slope.toFixed(5)}</td>`;
+      <td>${p.slope.toFixed(2)}</td>`;
     tbody.appendChild(r);
   });
   tbl.appendChild(tbody);
@@ -1150,14 +1203,14 @@ document.getElementById('btnExportCSV').addEventListener('click', ()=>{
   if(!samplePoints.length) return alert('No samples to export');
   let csv = 'index,lat,lng,elevation_m,source\n';
   samplePoints.forEach((p,i)=> csv += `${i+1},${p.lat},${p.lng},${p.elev},${p.source}\n`);
-  csv += '\nseg_index,from_idx,to_idx,dist_m,dz_m,slope_m_per_m\n';
+  csv += '\nseg_index,from_idx,to_idx,dist_m,dz_m,slope_percent\n';
   const pairs = [];
   for(let i=0;i<samplePoints.length-1;i++){
     const a=samplePoints[i], b=samplePoints[i+1];
     const d = haversineMeters(a.lat,a.lng,b.lat,b.lng);
     const dz = b.elev - a.elev;
-    const slope = d>0? Math.abs(dz)/d : 0;
-    csv += `${i+1},${i+1},${i+2},${d.toFixed(2)},${dz.toFixed(3)},${slope.toFixed(6)}\n`;
+    const slope = d>0? Math.abs(dz)/d * 100 : 0;
+    csv += `${i+1},${i+1},${i+2},${d.toFixed(2)},${dz.toFixed(3)},${slope.toFixed(2)}\n`;
   }
   const blob = new Blob([csv], {type:'text/csv'});
   const url = URL.createObjectURL(blob);
@@ -1196,4 +1249,4 @@ document.addEventListener('DOMContentLoaded', function() {
 updateCoordsBox();
 </script>
 </body>
-</html>
+  </html>
