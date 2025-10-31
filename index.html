@@ -40,17 +40,14 @@
   .viz-tab.active {background:var(--accent); color:white;}
   .viz-content {display:none;}
   .viz-content.active {display:block;}
-  #demCanvas, #flowCanvas, #threeDView {width:100%; height:300px; background:#f8f9fa; border-radius:8px; border:1px solid #ddd; touch-action: none;}
-  #threeDContainer {width:100%; height:300px; background:#1a1a1a; border-radius:8px; position:relative; overflow:hidden;}
+  #demCanvas, #flowCanvas {width:100%; height:300px; background:#f8f9fa; border-radius:8px; border:1px solid #ddd;}
+  #threeDContainer {width:100%; height:400px; background:white; border-radius:8px; border:1px solid #ddd;}
   .viz-controls {margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;}
   .viz-controls button {flex:1; min-width:120px;}
   .legend {display:flex; align-items:center; gap:10px; margin-top:8px; font-size:12px; flex-wrap:wrap;}
   .legend-color {width:20px; height:20px; border:1px solid #ccc;}
   .viz-info {margin-top:8px; font-size:12px; color:#666;}
-  .mobile-tip {display:none; background:#e3f2fd; padding:8px; border-radius:4px; margin-top:8px; font-size:12px;}
-  @media (max-width: 768px) {
-    .mobile-tip {display:block;}
-  }
+  .plotly-plot {width:100% !important; height:100% !important;}
 </style>
 </head>
 <body>
@@ -88,16 +85,12 @@
         </div>
         <div class="viz-controls">
           <button id="btnExportDEM">Export DEM Image</button>
-          <button id="btnToggleHillshade">Toggle Hillshade</button>
         </div>
       </div>
       
       <div class="viz-content" id="threedViz">
-        <div id="threeDContainer">
-          <canvas id="threeDView"></canvas>
-        </div>
-        <div class="viz-info">Drag to rotate • Pinch/Pull to zoom</div>
-        <div class="mobile-tip">💡 Use two fingers to rotate and zoom on mobile</div>
+        <div id="threeDContainer"></div>
+        <div class="viz-info">Drag to rotate • Scroll to zoom • Right-click to pan</div>
         <div class="viz-controls">
           <button id="btnReset3D">Reset View</button>
           <button id="btnExport3D">Export 3D Image</button>
@@ -213,33 +206,24 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/togeojson@0.16.0/dist/togeojson.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 
 <script>
-// ---------- NEW: Proper Visualization System with Mobile Support ----------
+// ---------- NEW: Accurate Visualization System with Plotly ----------
 class TerrainVisualizer {
   constructor() {
     this.demCanvas = document.getElementById('demCanvas');
     this.demCtx = this.demCanvas.getContext('2d');
     this.flowCanvas = document.getElementById('flowCanvas');
     this.flowCtx = this.flowCanvas.getContext('2d');
-    this.threeDCanvas = document.getElementById('threeDView');
-    this.threeDCtx = this.threeDCanvas.getContext('2d');
+    this.threeDContainer = document.getElementById('threeDContainer');
     
-    this.showHillshade = true;
-    this.isDragging = false;
-    this.lastMouseX = 0;
-    this.lastMouseY = 0;
-    this.rotationX = -30;
-    this.rotationY = 45;
-    this.zoom = 1.0;
-    this.lastTouchDistance = 0;
-    
-    this.setupEventListeners();
     this.setCanvasSizes();
+    this.setupEventListeners();
   }
 
   setCanvasSizes() {
-    const canvases = [this.demCanvas, this.flowCanvas, this.threeDCanvas];
+    const canvases = [this.demCanvas, this.flowCanvas];
     canvases.forEach(canvas => {
       canvas.width = canvas.offsetWidth;
       canvas.height = canvas.offsetHeight;
@@ -247,128 +231,11 @@ class TerrainVisualizer {
   }
 
   setupEventListeners() {
-    // Desktop mouse controls
-    this.threeDCanvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
-    this.threeDCanvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
-    this.threeDCanvas.addEventListener('mouseup', () => this.handleMouseUp());
-    this.threeDCanvas.addEventListener('wheel', (e) => this.handleWheel(e));
-    
-    // Mobile touch controls
-    this.threeDCanvas.addEventListener('touchstart', (e) => this.handleTouchStart(e), { passive: false });
-    this.threeDCanvas.addEventListener('touchmove', (e) => this.handleTouchMove(e), { passive: false });
-    this.threeDCanvas.addEventListener('touchend', () => this.handleTouchEnd());
-    
-    // Control buttons
-    document.getElementById('btnToggleHillshade').addEventListener('click', () => {
-      this.showHillshade = !this.showHillshade;
-      this.updateDEM();
-    });
-    
-    document.getElementById('btnReset3D').addEventListener('click', () => {
-      this.rotationX = -30;
-      this.rotationY = 45;
-      this.zoom = 1.0;
-      this.update3D();
-    });
-    
     // Export buttons
     document.getElementById('btnExportDEM').addEventListener('click', () => this.exportCanvas(this.demCanvas, 'dem'));
-    document.getElementById('btnExport3D').addEventListener('click', () => this.exportCanvas(this.threeDCanvas, '3d'));
     document.getElementById('btnExportFlow').addEventListener('click', () => this.exportCanvas(this.flowCanvas, 'flow'));
-  }
-
-  // Desktop mouse handlers
-  handleMouseDown(e) {
-    this.isDragging = true;
-    this.lastMouseX = e.clientX;
-    this.lastMouseY = e.clientY;
-    e.preventDefault();
-  }
-
-  handleMouseMove(e) {
-    if (!this.isDragging) return;
-    
-    const deltaX = e.clientX - this.lastMouseX;
-    const deltaY = e.clientY - this.lastMouseY;
-    
-    this.rotationY += deltaX * 0.5;
-    this.rotationX += deltaY * 0.5;
-    
-    // Clamp rotation for better UX
-    this.rotationX = Math.max(-89, Math.min(89, this.rotationX));
-    
-    this.lastMouseX = e.clientX;
-    this.lastMouseY = e.clientY;
-    
-    this.update3D();
-    e.preventDefault();
-  }
-
-  handleMouseUp() {
-    this.isDragging = false;
-  }
-
-  handleWheel(e) {
-    e.preventDefault();
-    this.zoom += e.deltaY * -0.001;
-    this.zoom = Math.max(0.1, Math.min(3.0, this.zoom));
-    this.update3D();
-  }
-
-  // Mobile touch handlers
-  handleTouchStart(e) {
-    if (e.touches.length === 1) {
-      this.isDragging = true;
-      this.lastMouseX = e.touches[0].clientX;
-      this.lastMouseY = e.touches[0].clientY;
-    } else if (e.touches.length === 2) {
-      // Calculate initial distance for pinch gesture
-      this.lastTouchDistance = this.getTouchDistance(e.touches);
-    }
-    e.preventDefault();
-  }
-
-  handleTouchMove(e) {
-    if (e.touches.length === 1 && this.isDragging) {
-      // Single touch - rotate
-      const deltaX = e.touches[0].clientX - this.lastMouseX;
-      const deltaY = e.touches[0].clientY - this.lastMouseY;
-      
-      this.rotationY += deltaX * 0.5;
-      this.rotationX += deltaY * 0.5;
-      
-      // Clamp rotation for better UX
-      this.rotationX = Math.max(-89, Math.min(89, this.rotationX));
-      
-      this.lastMouseX = e.touches[0].clientX;
-      this.lastMouseY = e.touches[0].clientY;
-      
-      this.update3D();
-    } else if (e.touches.length === 2) {
-      // Two touches - pinch to zoom
-      const currentDistance = this.getTouchDistance(e.touches);
-      
-      if (this.lastTouchDistance > 0) {
-        const scale = currentDistance / this.lastTouchDistance;
-        this.zoom *= scale;
-        this.zoom = Math.max(0.1, Math.min(3.0, this.zoom));
-        this.update3D();
-      }
-      
-      this.lastTouchDistance = currentDistance;
-    }
-    e.preventDefault();
-  }
-
-  handleTouchEnd() {
-    this.isDragging = false;
-    this.lastTouchDistance = 0;
-  }
-
-  getTouchDistance(touches) {
-    const dx = touches[0].clientX - touches[1].clientX;
-    const dy = touches[0].clientY - touches[1].clientY;
-    return Math.sqrt(dx * dx + dy * dy);
+    document.getElementById('btnExport3D').addEventListener('click', () => this.export3D());
+    document.getElementById('btnReset3D').addEventListener('click', () => this.reset3DView());
   }
 
   exportCanvas(canvas, type) {
@@ -378,14 +245,78 @@ class TerrainVisualizer {
     link.click();
   }
 
-  updateAll(samplePoints) {
+  export3D() {
+    if (window.Plotly && this.plotlyGraph) {
+      Plotly.downloadImage(this.plotlyGraph, {
+        format: 'png',
+        width: 1200,
+        height: 800,
+        filename: '3d_terrain'
+      });
+    }
+  }
+
+  reset3DView() {
+    if (this.plotlyGraph) {
+      Plotly.relayout(this.plotlyGraph, {
+        'scene.camera': {
+          eye: {x: 1.5, y: 1.5, z: 1.5},
+          center: {x: 0, y: 0, z: 0},
+          up: {x: 0, y: 0, z: 1}
+        }
+      });
+    }
+  }
+
+  updateAll(samplePoints, geometry) {
     if (!samplePoints || samplePoints.length === 0) return;
     
     this.samplePoints = samplePoints;
+    this.geometry = geometry;
     this.setCanvasSizes();
     this.updateDEM();
     this.update3D();
     this.updateFlow();
+  }
+
+  calculatePolygonDimensions() {
+    if (!this.geometry || this.geometry.type !== 'polygon') {
+      return { width: 1000, height: 1000, area: 1000000 }; // Default for lines
+    }
+    
+    const coords = this.geometry.coords;
+    let minLat = Infinity, maxLat = -Infinity;
+    let minLng = Infinity, maxLng = -Infinity;
+    
+    coords.forEach(coord => {
+      minLat = Math.min(minLat, coord[0]);
+      maxLat = Math.max(maxLat, coord[0]);
+      minLng = Math.min(minLng, coord[1]);
+      maxLng = Math.max(maxLng, coord[1]);
+    });
+    
+    // Calculate approximate dimensions in meters
+    const width = haversineMeters(minLat, minLng, minLat, maxLng);
+    const height = haversineMeters(minLat, minLng, maxLat, minLng);
+    const area = width * height;
+    
+    return { width, height, area };
+  }
+
+  calculateAppropriateExaggeration() {
+    const dimensions = this.calculatePolygonDimensions();
+    const area = dimensions.area;
+    
+    // Smart exaggeration based on area size
+    if (area < 10000) { // Small area (less than 1 hectare)
+      return 2.0;
+    } else if (area < 100000) { // Medium area (1-10 hectares)
+      return 1.5;
+    } else if (area < 1000000) { // Large area (10-100 hectares)
+      return 1.2;
+    } else { // Very large area
+      return 1.0; // No exaggeration
+    }
   }
 
   updateDEM() {
@@ -429,13 +360,6 @@ class TerrainVisualizer {
         
         ctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
         ctx.fillRect(x * gridSize, y * gridSize, gridSize, gridSize);
-        
-        // Hillshade
-        if (this.showHillshade) {
-          const intensity = 0.3 * (1 - normalized);
-          ctx.fillStyle = `rgba(0, 0, 0, ${intensity})`;
-          ctx.fillRect(x * gridSize, y * gridSize, gridSize, gridSize);
-        }
       }
     }
     
@@ -463,115 +387,89 @@ class TerrainVisualizer {
   }
 
   update3D() {
-    const { width, height } = this.threeDCanvas;
-    const ctx = this.threeDCtx;
-    
-    // Clear with sky gradient
-    const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, '#87CEEB');
-    gradient.addColorStop(1, '#98D8E8');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, width, height);
-    
-    if (!this.samplePoints) return;
+    if (!this.samplePoints || this.samplePoints.length === 0) return;
     
     const elevs = this.samplePoints.map(p => p.elev);
     const minElev = Math.min(...elevs);
     const maxElev = Math.max(...elevs);
     const elevRange = Math.max(1, maxElev - minElev);
     
-    // Improved 3D projection with better perspective
-    const centerX = width / 2;
-    const centerY = height / 2;
-    const baseRadius = 0.4 * Math.min(width, height) * this.zoom;
+    // Calculate appropriate exaggeration based on polygon size
+    const exaggeration = this.calculateAppropriateExaggeration();
     
-    // Convert to 3D points with proper perspective
-    const points3D = this.samplePoints.map((point, i) => {
-      const angle = (i / this.samplePoints.length) * Math.PI * 2;
-      const radius = baseRadius;
-      
-      // 3D coordinates
-      const x3d = Math.cos(angle) * radius;
-      const z3d = Math.sin(angle) * radius;
-      const y3d = ((point.elev - minElev) / elevRange) * radius * 0.8;
-      
-      // Apply rotations
-      const cosX = Math.cos(this.rotationX * Math.PI / 180);
-      const sinX = Math.sin(this.rotationX * Math.PI / 180);
-      const cosY = Math.cos(this.rotationY * Math.PI / 180);
-      const sinY = Math.sin(this.rotationY * Math.PI / 180);
-      
-      // Rotate around Y axis
-      let x = x3d * cosY + z3d * sinY;
-      let z = -x3d * sinY + z3d * cosY;
-      let y = y3d;
-      
-      // Rotate around X axis
-      y = y * cosX - z * sinX;
-      z = y * sinX + z * cosX;
-      
-      // Project to 2D with perspective
-      const scale = 200 / (200 + z);
-      return {
-        x: centerX + x * scale,
-        y: centerY - y * scale,
-        elev: point.elev
-      };
-    });
+    // Prepare data for Plotly
+    const x = this.samplePoints.map(p => p.lng);
+    const y = this.samplePoints.map(p => p.lat);
+    const z = this.samplePoints.map(p => p.elev);
     
-    // Draw terrain surface with gradient
-    const surfaceGradient = ctx.createLinearGradient(0, 0, 0, height);
-    surfaceGradient.addColorStop(0, '#2E8B57');
-    surfaceGradient.addColorStop(1, '#1F5F3A');
-    ctx.fillStyle = surfaceGradient;
-    
-    ctx.beginPath();
-    ctx.moveTo(points3D[0].x, points3D[0].y);
-    for (let i = 1; i < points3D.length; i++) {
-      ctx.lineTo(points3D[i].x, points3D[i].y);
-    }
-    ctx.closePath();
-    ctx.fill();
-    
-    // Draw terrain outline
-    ctx.strokeStyle = '#1F5F3A';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(points3D[0].x, points3D[0].y);
-    for (let i = 1; i < points3D.length; i++) {
-      ctx.lineTo(points3D[i].x, points3D[i].y);
-    }
-    ctx.closePath();
-    ctx.stroke();
-    
-    // Draw elevation markers
-    points3D.forEach((point, i) => {
-      // Only draw markers for significant points to reduce clutter
-      if (i % Math.max(1, Math.floor(this.samplePoints.length / 8)) === 0) {
-        ctx.fillStyle = '#333';
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, 3, 0, Math.PI * 2);
-        ctx.fill();
-        
-        // Elevation labels
-        ctx.fillStyle = '#000';
-        ctx.font = '10px Arial';
-        ctx.fillText(`${point.elev.toFixed(0)}m`, point.x + 5, point.y - 5);
+    // Create a mesh for better visualization
+    const trace = {
+      type: 'mesh3d',
+      x: x,
+      y: y,
+      z: z,
+      colorscale: [
+        [0, 'rgb(0,0,128)'],    // Dark blue for low elevation
+        [0.25, 'rgb(0,128,0)'], // Green
+        [0.5, 'rgb(255,255,0)'], // Yellow
+        [0.75, 'rgb(255,165,0)'], // Orange
+        [1, 'rgb(255,0,0)']     // Red for high elevation
+      ],
+      intensity: z,
+      colorbar: {
+        title: 'Elevation (m)',
+        titleside: 'right'
+      },
+      lighting: {
+        ambient: 0.8,
+        diffuse: 0.8,
+        specular: 0.1
+      },
+      lightposition: {
+        x: 100,
+        y: 100,
+        z: 1000
       }
-    });
+    };
     
-    // Draw base circle for reference
-    ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, baseRadius * 0.8, 0, Math.PI * 2);
-    ctx.stroke();
+    const layout = {
+      title: {
+        text: `3D Terrain Model • Exaggeration: ${exaggeration}x`,
+        font: { size: 14 }
+      },
+      scene: {
+        xaxis: { title: 'Longitude' },
+        yaxis: { title: 'Latitude' },
+        zaxis: { 
+          title: 'Elevation (m)',
+          range: [minElev - 10, maxElev + 10]
+        },
+        aspectratio: {
+          x: 1, 
+          y: 1, 
+          z: exaggeration * (elevRange / Math.max(1, this.calculatePolygonDimensions().width))
+        },
+        camera: {
+          eye: {x: 1.5, y: 1.5, z: 1.5}
+        }
+      },
+      margin: { l: 0, r: 0, b: 0, t: 40 },
+      paper_bgcolor: 'white',
+      plot_bgcolor: 'white'
+    };
     
-    // Info text
-    ctx.fillStyle = '#000';
-    ctx.font = '12px Arial';
-    ctx.fillText(`3D View • Drag to rotate • Pinch to zoom • Elevation: ${minElev.toFixed(0)}-${maxElev.toFixed(0)}m`, 10, 20);
-    ctx.fillText(`Rotation: X:${this.rotationX.toFixed(0)}° Y:${this.rotationY.toFixed(0)}° Zoom:${this.zoom.toFixed(1)}x`, 10, 35);
+    const config = {
+      responsive: true,
+      displaylogo: false,
+      modeBarButtonsToRemove: ['pan3d', 'orbitRotation', 'tableRotation']
+    };
+    
+    // Create or update the plot
+    if (this.plotlyGraph) {
+      Plotly.react(this.threeDContainer, [trace], layout, config);
+    } else {
+      this.plotlyGraph = Plotly.newPlot(this.threeDContainer, [trace], layout, config);
+    }
   }
 
   updateFlow() {
@@ -906,7 +804,7 @@ function hideVisualizations() {
 
 function updateVisualizations(samplePoints) {
   if (terrainVisualizer && samplePoints && samplePoints.length > 0) {
-    terrainVisualizer.updateAll(samplePoints);
+    terrainVisualizer.updateAll(samplePoints, currentGeometry);
   }
 }
 
@@ -1276,7 +1174,7 @@ document.querySelectorAll('.viz-tab').forEach(tab => {
     document.getElementById(tab.dataset.viz + 'Viz').classList.add('active');
     
     if (terrainVisualizer && samplePoints && samplePoints.length > 0) {
-      setTimeout(() => terrainVisualizer.updateAll(samplePoints), 100);
+      setTimeout(() => terrainVisualizer.updateAll(samplePoints, currentGeometry), 100);
     }
   });
 });
@@ -1290,4 +1188,4 @@ document.addEventListener('DOMContentLoaded', function() {
 updateCoordsBox();
 </script>
 </body>
-  </html>
+</html>
