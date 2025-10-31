@@ -32,6 +32,20 @@
   a.link{color:var(--accent);text-decoration:none}
   .error{color:#d9534f;background:#fdf2f2;padding:8px;border-radius:4px;margin:8px 0}
   .success{color:#2e7d32;background:#f2fdf2;padding:8px;border-radius:4px;margin:8px 0}
+  
+  /* New styles for visualizations */
+  .viz-container {margin-top:12px; display:none;}
+  .viz-tabs {display:flex; gap:8px; margin-bottom:12px;}
+  .viz-tab {padding:8px 16px; background:#f0f0f0; border-radius:6px; cursor:pointer; border:none; font-size:13px;}
+  .viz-tab.active {background:var(--accent); color:white;}
+  .viz-content {display:none;}
+  .viz-content.active {display:block;}
+  #demCanvas, #flowCanvas {width:100%; height:300px; background:#f8f9fa; border-radius:8px;}
+  #threeDContainer {width:100%; height:300px; background:#f8f9fa; border-radius:8px; position:relative;}
+  #threeDView {width:100%; height:100%;}
+  .viz-controls {margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;}
+  .viz-controls button {flex:1; min-width:120px;}
+  .downhill-arrow {position:absolute; width:0; height:0; border-left:6px solid transparent; border-right:6px solid transparent; border-top:12px solid #d9534f; transform-origin:center;}
 </style>
 </head>
 <body>
@@ -48,6 +62,46 @@
     <div class="panel" style="margin-top:12px">
       <h3>Cross-section</h3>
       <canvas id="xsChart"></canvas>
+    </div>
+
+    <!-- NEW: Visualizations Panel -->
+    <div class="panel viz-container" style="margin-top:12px" id="vizPanel">
+      <h3>3D Visualization & Analysis</h3>
+      <div class="viz-tabs">
+        <button class="viz-tab active" data-viz="dem">DEM View</button>
+        <button class="viz-tab" data-viz="threed">3D View</button>
+        <button class="viz-tab" data-viz="flow">Flow Direction</button>
+      </div>
+      
+      <div class="viz-content active" id="demViz">
+        <canvas id="demCanvas"></canvas>
+        <div class="viz-controls">
+          <button id="btnExportDEM">Export DEM Image</button>
+          <button id="btnToggleHillshade">Toggle Hillshade</button>
+        </div>
+      </div>
+      
+      <div class="viz-content" id="threedViz">
+        <div id="threeDContainer">
+          <canvas id="threeDView"></canvas>
+        </div>
+        <div class="viz-controls">
+          <button id="btnRotate3D">Rotate View</button>
+          <button id="btnReset3D">Reset View</button>
+          <button id="btnExport3D">Export 3D Image</button>
+        </div>
+      </div>
+      
+      <div class="viz-content" id="flowViz">
+        <canvas id="flowCanvas"></canvas>
+        <div class="viz-controls">
+          <button id="btnExportFlow">Export Flow Map</button>
+          <button id="btnToggleArrows">Toggle Arrows</button>
+        </div>
+        <div class="small" style="margin-top:8px">
+          Red arrows show downhill direction. Arrow size indicates slope steepness.
+        </div>
+      </div>
     </div>
 
     <div class="panel" style="margin-top:12px">
@@ -338,6 +392,7 @@ document.getElementById('btnClear').addEventListener('click', ()=>{
   document.getElementById('tableBox').innerHTML='No data'; 
   if(window.xsChart) window.xsChart.destroy(); 
   showStatus('', 'info');
+  hideVisualizations();
 });
 
 // add point function (user click)
@@ -358,6 +413,289 @@ function updateCoordsBox(){
   if(!currentGeometry){ document.getElementById('coordsBox').textContent='No geometry yet'; return; }
   const lines = currentGeometry.coords.map(c=>`${c[0].toFixed(6)}, ${c[1].toFixed(6)}`);
   document.getElementById('coordsBox').textContent = `${currentGeometry.type.toUpperCase()} • ${currentGeometry.coords.length} pts\n` + lines.join('\n');
+}
+
+// ---------- NEW: Visualization Functions ----------
+let demCanvas, demCtx, flowCanvas, flowCtx, threeDCanvas, threeDCtx;
+let showHillshade = true;
+let showArrows = true;
+let threeDRotation = 0;
+
+function initializeVisualizations() {
+  // Initialize canvases
+  demCanvas = document.getElementById('demCanvas');
+  demCtx = demCanvas.getContext('2d');
+  flowCanvas = document.getElementById('flowCanvas');
+  flowCtx = flowCanvas.getContext('2d');
+  threeDCanvas = document.getElementById('threeDView');
+  threeDCtx = threeDCanvas.getContext('2d');
+  
+  // Set canvas sizes
+  const setCanvasSize = (canvas) => {
+    canvas.width = canvas.offsetWidth;
+    canvas.height = canvas.offsetHeight;
+  };
+  
+  setCanvasSize(demCanvas);
+  setCanvasSize(flowCanvas);
+  setCanvasSize(threeDCanvas);
+  
+  // Tab switching
+  document.querySelectorAll('.viz-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.viz-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.viz-content').forEach(c => c.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById(tab.dataset.viz + 'Viz').classList.add('active');
+      updateVisualizations();
+    });
+  });
+  
+  // Control buttons
+  document.getElementById('btnToggleHillshade').addEventListener('click', () => {
+    showHillshade = !showHillshade;
+    updateDEMVisualization();
+  });
+  
+  document.getElementById('btnToggleArrows').addEventListener('click', () => {
+    showArrows = !showArrows;
+    updateFlowVisualization();
+  });
+  
+  document.getElementById('btnRotate3D').addEventListener('click', () => {
+    threeDRotation += 45;
+    if (threeDRotation >= 360) threeDRotation = 0;
+    update3DVisualization();
+  });
+  
+  document.getElementById('btnReset3D').addEventListener('click', () => {
+    threeDRotation = 0;
+    update3DVisualization();
+  });
+  
+  // Export buttons
+  document.getElementById('btnExportDEM').addEventListener('click', exportDEM);
+  document.getElementById('btnExport3D').addEventListener('click', export3D);
+  document.getElementById('btnExportFlow').addEventListener('click', exportFlow);
+}
+
+function showVisualizations() {
+  document.getElementById('vizPanel').style.display = 'block';
+}
+
+function hideVisualizations() {
+  document.getElementById('vizPanel').style.display = 'none';
+}
+
+function updateVisualizations() {
+  if (samplePoints.length === 0) return;
+  
+  updateDEMVisualization();
+  update3DVisualization();
+  updateFlowVisualization();
+}
+
+function updateDEMVisualization() {
+  if (!demCtx || samplePoints.length === 0) return;
+  
+  const width = demCanvas.width;
+  const height = demCanvas.height;
+  
+  // Clear canvas
+  demCtx.fillStyle = '#f8f9fa';
+  demCtx.fillRect(0, 0, width, height);
+  
+  // Create elevation grid (simplified for demo)
+  const elevs = samplePoints.map(p => p.elev);
+  const minElev = Math.min(...elevs);
+  const maxElev = Math.max(...elevs);
+  const elevRange = maxElev - minElev || 1;
+  
+  // Draw elevation-based colors
+  const gridSize = 20;
+  for (let x = 0; x < width; x += gridSize) {
+    for (let y = 0; y < height; y += gridSize) {
+      // Simplified elevation mapping
+      const elevIndex = Math.floor((x / width + y / height) * samplePoints.length / 2) % samplePoints.length;
+      const elev = samplePoints[elevIndex].elev;
+      const intensity = (elev - minElev) / elevRange;
+      
+      // Color based on elevation
+      const r = Math.floor(100 + intensity * 155);
+      const g = Math.floor(150 + intensity * 105);
+      const b = Math.floor(200 - intensity * 100);
+      
+      demCtx.fillStyle = `rgb(${r},${g},${b})`;
+      demCtx.fillRect(x, y, gridSize, gridSize);
+      
+      // Add hillshade effect
+      if (showHillshade) {
+        demCtx.fillStyle = `rgba(0,0,0,${0.3 * (1 - intensity)})`;
+        demCtx.fillRect(x, y, gridSize, gridSize);
+      }
+    }
+  }
+  
+  // Add contour lines
+  demCtx.strokeStyle = 'rgba(255,255,255,0.3)';
+  demCtx.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    const contourLevel = minElev + (i * elevRange / 4);
+    demCtx.beginPath();
+    // Simplified contour drawing
+    demCtx.moveTo(0, height * (i / 5));
+    demCtx.lineTo(width, height * (i / 5));
+    demCtx.stroke();
+  }
+  
+  // Add title
+  demCtx.fillStyle = '#000';
+  demCtx.font = '14px Arial';
+  demCtx.fillText(`Digital Elevation Model (Range: ${minElev.toFixed(0)} - ${maxElev.toFixed(0)} m)`, 10, 20);
+}
+
+function update3DVisualization() {
+  if (!threeDCtx || samplePoints.length === 0) return;
+  
+  const width = threeDCanvas.width;
+  const height = threeDCanvas.height;
+  
+  // Clear canvas
+  threeDCtx.fillStyle = '#87CEEB';
+  threeDCtx.fillRect(0, 0, width, height);
+  
+  const elevs = samplePoints.map(p => p.elev);
+  const minElev = Math.min(...elevs);
+  const maxElev = Math.max(...elevs);
+  const elevRange = maxElev - minElev || 1;
+  
+  // Draw 3D terrain
+  const points = samplePoints.map((p, i) => {
+    const angle = (i / samplePoints.length) * Math.PI * 2 + (threeDRotation * Math.PI / 180);
+    const x = width / 2 + Math.cos(angle) * (width / 3);
+    const y = height / 2 - (p.elev - minElev) / elevRange * (height / 3) + Math.sin(angle) * (width / 6);
+    return { x, y, elev: p.elev };
+  });
+  
+  // Draw terrain surface
+  threeDCtx.fillStyle = '#8FBC8F';
+  threeDCtx.beginPath();
+  threeDCtx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    threeDCtx.lineTo(points[i].x, points[i].y);
+  }
+  threeDCtx.lineTo(width, height);
+  threeDCtx.lineTo(0, height);
+  threeDCtx.closePath();
+  threeDCtx.fill();
+  
+  // Draw elevation points
+  points.forEach(point => {
+    threeDCtx.fillStyle = '#333';
+    threeDCtx.beginPath();
+    threeDCtx.arc(point.x, point.y, 3, 0, Math.PI * 2);
+    threeDCtx.fill();
+  });
+  
+  // Add title and info
+  threeDCtx.fillStyle = '#000';
+  threeDCtx.font = '14px Arial';
+  threeDCtx.fillText('3D Terrain View', 10, 20);
+  threeDCtx.font = '12px Arial';
+  threeDCtx.fillText(`Rotation: ${threeDRotation}° | Elevation range: ${minElev.toFixed(0)}-${maxElev.toFixed(0)}m`, 10, 40);
+}
+
+function updateFlowVisualization() {
+  if (!flowCtx || samplePoints.length === 0) return;
+  
+  const width = flowCanvas.width;
+  const height = flowCanvas.height;
+  
+  // Clear canvas
+  flowCtx.fillStyle = '#f8f9fa';
+  flowCtx.fillRect(0, 0, width, height);
+  
+  // Draw base terrain
+  const elevs = samplePoints.map(p => p.elev);
+  const minElev = Math.min(...elevs);
+  const maxElev = Math.max(...elevs);
+  const elevRange = maxElev - minElev || 1;
+  
+  // Draw elevation background
+  for (let i = 0; i < samplePoints.length - 1; i++) {
+    const x1 = (i / (samplePoints.length - 1)) * width;
+    const x2 = ((i + 1) / (samplePoints.length - 1)) * width;
+    const elev1 = samplePoints[i].elev;
+    const elev2 = samplePoints[i + 1].elev;
+    
+    const intensity1 = (elev1 - minElev) / elevRange;
+    const intensity2 = (elev2 - minElev) / elevRange;
+    
+    const gradient = flowCtx.createLinearGradient(x1, 0, x2, 0);
+    gradient.addColorStop(0, `hsl(120, 70%, ${30 + intensity1 * 40}%)`);
+    gradient.addColorStop(1, `hsl(120, 70%, ${30 + intensity2 * 40}%)`);
+    
+    flowCtx.fillStyle = gradient;
+    flowCtx.fillRect(x1, 0, x2 - x1, height);
+  }
+  
+  // Draw downhill arrows
+  if (showArrows) {
+    for (let i = 0; i < samplePoints.length - 1; i++) {
+      const x = ((i + 0.5) / (samplePoints.length - 1)) * width;
+      const y = height / 2;
+      
+      const elev1 = samplePoints[i].elev;
+      const elev2 = samplePoints[i + 1].elev;
+      const slope = Math.abs(elev2 - elev1);
+      
+      // Arrow direction (downhill)
+      const direction = elev2 < elev1 ? 1 : -1;
+      const arrowSize = 10 + slope * 5;
+      
+      flowCtx.save();
+      flowCtx.translate(x, y);
+      flowCtx.rotate(direction * Math.PI / 2);
+      
+      flowCtx.fillStyle = '#d9534f';
+      flowCtx.beginPath();
+      flowCtx.moveTo(0, -arrowSize);
+      flowCtx.lineTo(-arrowSize/2, 0);
+      flowCtx.lineTo(arrowSize/2, 0);
+      flowCtx.closePath();
+      flowCtx.fill();
+      
+      flowCtx.restore();
+    }
+  }
+  
+  // Add title
+  flowCtx.fillStyle = '#000';
+  flowCtx.font = '14px Arial';
+  flowCtx.fillText('Downhill Flow Direction', 10, 20);
+  flowCtx.font = '12px Arial';
+  flowCtx.fillText('Red arrows point downhill | Size indicates slope steepness', 10, 40);
+}
+
+function exportDEM() {
+  const link = document.createElement('a');
+  link.download = 'dem_visualization.png';
+  link.href = demCanvas.toDataURL();
+  link.click();
+}
+
+function export3D() {
+  const link = document.createElement('a');
+  link.download = '3d_terrain.png';
+  link.href = threeDCanvas.toDataURL();
+  link.click();
+}
+
+function exportFlow() {
+  const link = document.createElement('a');
+  link.download = 'flow_direction.png';
+  link.href = flowCanvas.toDataURL();
+  link.click();
 }
 
 // ---------- Sampling & Elevation ----------
@@ -440,6 +778,11 @@ async function analyze(){
   renderResults({pairs, pairwise, generalSlope, maxElev, minElev, maxDist, area});
   renderChart(samplePoints);
   renderMapSamples();
+  
+  // NEW: Show and update visualizations
+  showVisualizations();
+  initializeVisualizations();
+  updateVisualizations();
   
   showStatus('Analysis complete!', 'success');
   setTimeout(() => showStatus('', 'info'), 3000);
@@ -760,10 +1103,16 @@ map.on('dblclick', e=>{
   }
 });
 
+// Initialize visualizations on load
+document.addEventListener('DOMContentLoaded', function() {
+  initializeVisualizations();
+  hideVisualizations();
+});
+
 // show click on sample to view more -> handled by popups when rendering
 // initial message
 updateCoordsBox();
 
 </script>
 </body>
-</html>
+  </html>
